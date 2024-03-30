@@ -29,14 +29,6 @@ export const SearchProvider = ({ children }) => {
             section: 'Home',
             perform: () => router.push('/'),
           },
-          {
-            id: 'projects',
-            name: 'Projects',
-            keywords: '',
-            shortcut: ['p'],
-            section: 'Home',
-            perform: () => router.push('/projects'),
-          },
         ],
         onSearchDocumentsLoad(json) {
           return json.map((post: CoreContent<Blog>) => ({
@@ -47,7 +39,7 @@ export const SearchProvider = ({ children }) => {
             subtitle: post.tags.join(', '),
             perform: () => router.push(post.path),
           }))
-        },
+        }
       }}
     >
       {children}

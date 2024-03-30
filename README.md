@@ -1,3 +1,19 @@
+# Alexey's README:
+
+To build:
+`yarn build`
+
+To test:
+`yarn def`
+
+To publish to Github:
+Add/remove `basePath` from `next.config.js`
+Update `components/Image.tsx` to either have/not have `src`
+
+Also, for the Github repo, add the file `.nojekyll` to root
+
+# Original README:
+
 ![tailwind-nextjs-banner](/public/static/images/twitter-card.png)
 
 # Tailwind Nextjs Starter Blog

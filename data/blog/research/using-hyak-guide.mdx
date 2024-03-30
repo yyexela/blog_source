@@ -1,0 +1,318 @@
+---
+title: Getting Started with Hyak
+date: '2024-03-29'
+tags: ['Research', 'Supercomputing']
+draft: false
+summary: My journey getting started with UW's Hyak supercomputer 
+---
+
+# Hyak Tutorial
+
+In this tutorial I show what I did to get the Hyak supercomputer running with a GPU. This tutorial covers:
+- Logging into Hyak
+- Commands to view/manage resources
+- Creating an interactive shell with resources
+- What the heck is Apptainer (with special guest Docker)
+- Using a GPU
+- Creating a batch job
+
+## Index
+
+- [1: Logging In](#step-1-logging-in)
+- [2: Useful Commands](#step-2-useful-commands)
+- [3: Getting Your Code](#step-3-getting-your-code)
+- [4: Running an Interactive Session](#step-4-running-an-interactive-session)
+- [5: Docker to Apptainer](#step-5-docker-to-apptainer)
+- [6: Run Apptainer Interatively](#step-6-run-apptainer-interactively)
+- [7: Apptainer Runscript](#step-7-apptainer-runscript)
+- [8: Batch Script](#step-8-batch-script)
+- [9: Treat Yo Self](#step-9-treat-yo-self)
+
+## Useful links
+
+Below are some useful links I found that can be useful for further/supplemental reading:  
+[Hyak Documentation](https://hyak.uw.edu/docs)  
+[Hyak Idle/Checkpoint Resources](https://hyak.uw.edu/docs/compute/checkpoint/)
+- Please read this, this is from UW and is very nice for getting started.  
+
+[Slurm Documentation](https://slurm.schedmd.com/)  
+[Slurm sbatch Environment Variables](https://slurm.schedmd.com/sbatch.html)  
+- Slurm is what is used to manage resources on Hyak, this is the main documentation for that.  
+
+[Apptainer 1.1](https://apptainer.org/docs/user/1.1/)  
+[Apptainer from Dockerfile](https://apptainer.org/docs/user/main/docker_and_oci.html#apptainer-definition-file-vs-dockerfile)  
+[Apptainer definition file](https://apptainer.org/docs/user/main/definition_files.html)
+- Apptainer is the Docker replacement for Hyak. It can be used to create images with arbitrary OS's and packages installed that you might not be able to install directly on Hyak.  
+
+## What I did
+
+My goal was to get [this code](https://github.com/yyexela/OmniAnomaly/tree/docker) working on Hyak. Essentially, I needed to somehow:
+- Allocate resources on Hyak (CPU/GPU/RAM)
+- Access those resources
+- Start up a Docker container from an image 
+- Run the code in the Docker container with GPU support
+
+I got access through the AMATH department, so you may see some things differently depending on how you get access.
+
+#### Step 1: Logging In
+
+You can just SSH into Hyak using your NetID:
+- `ssh <NETID>@klone.hyak.uw.edu`
+
+#### Step 2: Useful Commands
+
+Once logged in, you can do the following to view/manage resources:
+- `hyakalloc`: See available resources (you will see two tables: the first are resources available specific to group(s) you're in, the second are unused resources by groups you're not in, but are available to you anyways, called [checkpoint resources](https://hyak.uw.edu/docs/compute/checkpoint/)).
+- `hyakstorage`: Shows your disk usage.
+- `dns`: The package manager for Rocky Linux, which Hyak is running. You can do `dns search <script>` to see which package was installed for a certain command. I used this for figuring out which package installed [`sinfo`](https://slurm.schedmd.com/sinfo.html), which shows "information about Slurm nodes and partitions".
+- `squeue -u $USER --long`: Shows jobs you're running.
+- `sinfo`: Shows information about Slurm nodes and partitions.
+- `sacct`: Shows job information (running/stopped/pending/etc..).
+- `scancel <JOBID>`: Cancel a job with ID `<JOBID>`.
+- `scp`: Copy files from another computer using SSH.
+- `nvidia-smi`: Shows graphics card usage (only works when inside an interactive session with a GPU).
+- `ps -lu $USER`: Shows niceness of processes you're running.
+- `module avail`: List available modules (only works in compute node)
+- `module load <module>`: Load specified module (only works in compute node)
+- `module list`: List loaded modules (only works in compute node)
+
+Note: Most commands have a "manual" that you can get access to by running `man <command>` in the terminal.
+
+#### Step 3: Getting your code
+
+To copy your code you can just set up git and download it to Hyak. Make sure you download to the login node, as data downloaded there appears to be shared across all compute nodes. I also needed to copy over data from a desktop computer in UW's network, so I set up SSH and used the `scp` utility to transfer those files over to Hyak.
+
+#### Step 4: Running an Interactive Session
+
+The next step, and something that's useful in general, is getting access to resources. The easiest way to do this is to start an interactive shell session with resources allocated to it. The command I used was:
+- `salloc -A amath -p ckpt -N 1 -n 2 -c 4 -G 1 --mem=4G --time=5:00:00 --nice=0`
+  - `-A amath`: `amath` group (from running the `groups` command).
+  - `-p ckpt`: resource patition being used (from `sinfo`, I have access to `gpu-rtx6k` from amath or `ckpt`).
+  - `-N 1`: number of nodes these resources spread across (most of the time it's `1`, unless code supports another case).
+  - `-n 2`: the maximum number of tasks that is expected to be launched to complete the job.
+  - `-c 4`: number of compute cores needed (CPUs per task).
+  - `-G 1`: the number of GPUs required for this job.
+  - `--mem=4G`: amount of RAM needed.
+  - `-t`: maximum runtime for the job (`h:m:s` or `days-hours` or `minutes`).
+  - `--nice=<value>`: `<value>` is a number `-2147483645 <= <value> <= 2147483645`, higher nice means the job has a lower priority and can be preempted by a job with a higher priority. Please use higher nice values for jobs that are expected to take longer to run!
+
+Once your job has been allocated resources, you can see which GPU you were given with `nvidia-smi`.
+
+#### Step 5: Docker to Apptainer
+
+The code originally was run in Docker, but that's not supported since it requires root priveleges. However, Apptainer *is* supported, so here's what I did to get that working.
+
+In the original code, I had a Dockerfile:
+
+```Dockerfile
+# Base image
+FROM tensorflow/tensorflow:1.15.0-gpu
+
+# Resolves error with key
+# See: https://developer.nvidia.com/blog/updating-the-cuda-linux-gpg-repository-key/
+# See: https://askubuntu.com/questions/1444943/nvidia-gpg-error-the-following-signatures-couldnt-be-verified-because-the-publi
+RUN apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/3bf863cc.pub
+
+# Update image contents to have latest python3 and pip3 for image
+RUN apt-get update
+RUN apt-get install -y python3-pip python3-dev vim
+WORKDIR /usr/local/bin
+RUN rm /usr/local/bin/python
+RUN ln -s /usr/bin/python3 python
+RUN pip3 install --upgrade pip
+RUN apt-get install -y git curl zip unzip
+
+# Create /app directory
+WORKDIR /app
+
+# Copy OmniAnomaly requirements into image
+COPY ./requirements.txt /app
+
+# Install OmniAnomaly requirements 
+RUN pip3 install -r requirements.txt
+
+# Set initial folder to be OmniAnomaly
+WORKDIR /app/OmniAnomaly
+```
+
+which I built with the following command:
+- `docker build -t omnianomaly .`
+
+and ran with:
+- `docker run --gpus all -u $(id -u):$(id -g) -v./:/app/OmniAnomaly -it --rm omnianomaly bash`
+
+What this did was:
+- Create a Docker Image with Tensorflow1.15.0 that supports GPU usage, installs my required packages (`requirements.txt`), and changes the working directory to `/app/OmniAnomaly` which contains the code from [here](https://github.com/yyexela/OmniAnomaly/tree/docker). 
+
+I could then run the code by running:
+- `python main.py --dataset='MSL' --max_epoch=20`
+
+Note, `requirements.txt` contains:
+```
+six == 1.11.0
+matplotlib == 3.0.2
+numpy == 1.16.0
+pandas == 0.23.4
+scipy == 1.2.0
+scikit_learn == 0.20.2
+tensorflow-gpu == 1.15.0
+tensorflow_probability == 0.8.0
+tqdm == 4.28.1
+imageio == 2.4.1
+fs == 2.3.0
+click == 7.0
+git+https://github.com/yyexela/tfsnippet-tf-compat.git@v1
+git+https://github.com/yyexela/zhusuan-tf-compat.git@v1
+```
+
+To convert the Docker image to an Apptainer container, I created the following [definition file](https://apptainer.org/docs/user/main/definition_files.html):
+
+```
+# Base image
+Bootstrap: docker
+From: tensorflow/tensorflow:1.15.0-gpu
+
+%post
+        # Resolves error with key
+        # See: https://developer.nvidia.com/blog/updating-the-cuda-linux-gpg-repository-key/
+        # See: https://askubuntu.com/questions/1444943/nvidia-gpg-error-the-following-signatures-couldnt-be-verified-because-the-publi
+        apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/3bf863cc.pub
+
+        # Update image contents to have latest python3 and pip3 for image
+        apt-get update
+        apt-get install -y python3-pip python3-dev vim
+        cd /usr/local/bin
+        rm /usr/local/bin/python
+        ln -s /usr/bin/python3 python
+        pip3 install --upgrade pip
+        apt-get install -y git curl zip unzip
+
+        # Install OmniAnomaly requirements 
+        pip3 install -r /app/requirements.txt
+
+%files
+        /mmfs1/home/alexeyy/storage/School/Research/submodules/OmniAnomaly/requirements.txt /app/requirements.txt
+
+```
+
+I could then build the container with:
+- `apptainer build ./omnianomaly.sif ./omnianomaly.def`
+- Note: Please run this in a compute node, not a login node
+
+#### Step 6: Run Apptainer Interactively
+
+I could then run the Apptainer container with:
+- `apptainer shell --nv --bind .:/app/omnianomaly omnianomaly.sif`
+  - `shell`: Start the container interactively.
+  - `--nv`: Allow NVIDIA GPU support (very important!!!).
+  - `--bind <src>:<dest>`: Mount files/directories from outside the container `<src>` to inside the container `<dest>`.
+  - `omnianomaly.sif`: The container I created earlier.
+
+Once in, I verify I have GPU access by the following sequence of commands:
+- `python`
+- `>> import tensorflow as tf`
+- `>> sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))`
+
+I have the following in my output, showing I have GPU availability!
+```
+...
+2024-03-29 16:02:52.475353: I tensorflow/core/common_runtime/gpu/gpu_device.cc:1746] Adding visible gpu devices: 0
+...
+2024-03-29 16:02:52.481848: I tensorflow/core/common_runtime/gpu/gpu_device.cc:1304] Created TensorFlow device (/job:localhost/replica:0/task:0/device:GPU:0 with 10311 MB memory) -> physical GPU (device: 0, name: NVIDIA GeForce RTX 2080 Ti, pci bus id: 0000:b1:00.0, compute capability: 7.5)
+...
+/job:localhost/replica:0/task:0/device:GPU:0 -> device: 0, name: NVIDIA GeForce RTX 2080 Ti, pci bus id: 0000:b1:00.0, compute capability: 7.5
+...
+```
+
+Success! Now, how to run this as a batch job (ie. *not* interactively).
+
+#### Step 7: Apptainer Runscript
+
+The next step is to be able to run our Apptainer container from the command line before making a batch script. To do this, you add a `%runscript` section to your definition file. My updated file looks like this:
+
+```
+# Base image
+Bootstrap: docker
+From: tensorflow/tensorflow:1.15.0-gpu
+
+%post
+        # Resolves error with key
+        # See: https://developer.nvidia.com/blog/updating-the-cuda-linux-gpg-repository-key/
+        # See: https://askubuntu.com/questions/1444943/nvidia-gpg-error-the-following-signatures-couldnt-be-verified-because-the-publi
+        apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/3bf863cc.pub
+
+        # Update image contents to have latest python3 and pip3 for image
+        apt-get update
+        apt-get install -y python3-pip python3-dev vim
+        cd /usr/local/bin
+        rm /usr/local/bin/python
+        ln -s /usr/bin/python3 python
+        pip3 install --upgrade pip
+        apt-get install -y git curl zip unzip
+
+        # Install OmniAnomaly requirements 
+        pip3 install -r /app/requirements.txt
+
+%files
+        /mmfs1/home/alexeyy/storage/School/Research/submodules/OmniAnomaly/requirements.txt /app/requirements.txt
+
+%runscript
+        #!/bin/bash
+        echo "Running OmniAnomaly: \"time python main.py $*\""
+        cd /app/omnianomaly && time python -u main.py $@
+        exec echo "Finished Running OmniAnomaly"
+
+```
+
+Then, I can run it on the command line with:
+- `apptainer run --nv --bind .:/app/omnianomaly omnianomaly.sif --dataset='MSL' --max_epoch=20`
+
+#### test
+
+#### Step 8: Batch Script
+
+The last step to get everything working is to create a batch script that is automatically run when a batch job is created. I created a file called `omnianomaly.slurm` with the following contents:
+
+```slurm
+#!/bin/bash
+  
+#SBATCH --account=amath
+#SBATCH --partition=gpu-rtx6k
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gpus=1
+#SBATCH --mem=16G
+#SBATCH --cpus-per-task=1
+#SBATCH --time=00:10:00
+#SBATCH --nice=0
+
+#SBATCH --job-name=train_MSL
+#SBATCH --output=/mmfs1/home/alexeyy/storage/logs/output.out
+
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=alexeyy@uw.edu
+
+apptainer run --nv --bind /mmfs1/home/alexeyy/storage/School/Research/submodules/OmniAnomaly:/app/omnianomaly /mmfs1/home/alexeyy/storage/School/Research/submodules/OmniAnomaly/omnianomaly.sif --dataset='MSL' --max_epoch=20
+```
+
+I can then request resources for the code to run with
+- `sbatch omnianomaly.slurm`
+
+Note, the SBATCH variables can be seen in detail [here](https://slurm.schedmd.com/sbatch.html):
+- `--account=amath`: Group you're a part of (from `groups`).
+- `--partition=gpu-rtx6k`: Partition you have access to (from `sinfo`, can also be `ckpt`)
+- `--nodes=1`: number of nodes these resources spread across (most of the time it's `1`, unless code supports another case).
+- `--ntasks=1`: The maximum number of tasks that is expected to be launched to complete the job.
+- `--gpus=1`: The number of GPUs required for this job.
+- `--mem=16G`: The amount of RAM neede dfor this job.
+- `--cpus-per-task=1`: Number of compute cores needed per task.
+- `--time=00:10:00`: Maximum runtime for the job.
+- `--nice=100`: A number `-2147483645 <= <value> <= 2147483645`, higher nice means the job has a lower priority and can be preempted by a job with a higher priority. Please use higher nice values for jobs that are expected to take longer to run!
+- `--job-name=train_MSL`: Add a name for your job.
+- `--output=/mmfs1/home/alexeyy/storage/logs/output.out`: Output file (where stdout and stderr are redirected to).
+- `--mail-user=alexeyy@uw.edu`: Email address to send status updates to.
+- `--mail-type=ALL`: What kind of updates to send (I wanted everything because it's cool).
+
+#### Step 9: Treat yo self
+
+I went and got myself banh mi as a well deserved treat! Got everything working by 6pm on a friday`:)`
