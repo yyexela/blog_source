@@ -68,6 +68,7 @@ Once logged in, you can do the following to view/manage resources:
 - `squeue -u $USER --long`: Shows jobs you're running.
 - `sinfo`: Shows information about Slurm nodes and partitions.
 - `sacct`: Shows job information (running/stopped/pending/etc..).
+- `sacct --starttime <YYYY-MM-DD> --format=User,JobID,Jobname%50,partition,state,time,start,end,elapsed,MaxRss,MaxVMSize,nnodes,ncpus,nodelist`: Shows job history from specified date `<YYYY-MM-DD>` ([source](https://stackoverflow.com/questions/48187625/slurm-job-history-get-full-length-jobname)).
 - `scancel <JOBID>`: Cancel a job with ID `<JOBID>`.
 - `scp`: Copy files from another computer using SSH.
 - `nvidia-smi`: Shows graphics card usage (only works when inside an interactive session with a GPU).

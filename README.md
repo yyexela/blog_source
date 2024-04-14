@@ -9,6 +9,7 @@ To test:
 To publish to Github:
 Add/remove `basePath` from `next.config.js`
 Update `components/Image.tsx` to either have/not have `src`
+Copy output from `out` to where website is stored
 
 Also, for the Github repo, add the file `.nojekyll` to root
 
