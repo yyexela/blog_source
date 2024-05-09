@@ -1,0 +1,232 @@
+---
+title: Proofer
+date: '2024-05-08'
+tags: ['Baking', 'Projects']
+draft: false
+summary: Making a Proofing Box
+---
+
+# Making a Proofing Box
+
+The goal of this project was to create a proofing box to help with baking. The requirement is that I can set the temperature of a box to hold about 80 degrees Farenheight in temperature when the surrounding temperature is much lower. This would help with baking breads and what not in Seattle during the winter! It also helps make baking easier in general, as maintaining a constant proofing temperature reduces baking variability.
+
+One option was to just buy a [Brod and Taylor proofing box](https://brodandtaylor.com/products/folding-proofer-slow-cooker), but they're expensive ($219). So, having a spare Raspberry Pi lying around, I decided to make my own box from scratch!
+
+## Index
+
+- [1: Parts List](#parts-list)
+- [2: Assembly](#assembly)
+- [3: Images](#images)
+- [4: Figures](#figures)
+- [5: Raspberry Pi Code](#raspberry-pi-code)
+
+## Parts List
+
+| Item | Price |
+| --- | --- |
+| Homikit 2 Pack Wire Baking Rack, Stainless Steel 12" x 9" | $16.99 |
+| VIVOSUN Durable Waterproof Seedling Heat Mat 10" x 20.75" | $11.98 |
+| CanaKit 5V 2.5A Raspberry Pi 3 B+ Power Supply/Adapter | $9.95 |
+| Digital Loggers Direct - Iot Relay | $29.95 |
+| Adafruit Sensirion SHT41 Temperature & Humidity Sensor (STEMMA QT /Qwiic) | $5.95 |
+| STEMMA QT / Qwiic JST SH 4-Pin Cable - 400mm long | $1.50 |
+| SparkFun Qwiic or Stemma QT SHIM for Raspberry Pi / SBC | $2.50 |
+| i2c / SPI character LCD backpack - STEMMA QT / Qwiic | $9.95 |
+| Standard LCD 16x2 + extras (white on blue) | $9.95 |
+| STEMMA QT / Qwiic JST SH 4-Pin Cable - 200mm Long | $1.25 |
+| Extension Cord | $13.48 |
+| Raspberry Pi Model B | $35.00 |
+| Samsung Micro SD 64G | $14.99 |
+| Igloo Cooler | $30.00 |
+
+Total: $193.44
+
+Okay, so adding everything up, if you decide to buy this all from scratch it'll cost you about the same as a Brod and Taylor proofer. Is it cheaper? Yes, but marginally. The best part, however, is that if you make it yourself it's programmable, has WiFi, Bluetooth, and runs Python. Also, the parts are a lot more replacable and reusable! I didn't include the cost for the small jumper cables or other tiny parts that I had lying around.
+
+(Also, I bought the cooler off Craigslist, I think it costs a lot more new.)
+
+## Assembly
+
+So for assembly it's pretty straight-forward. First, solder the LCD backpack to the LCD screen. Set up your Raspberry Pi as you normally would, add the Stemma QT SHIM on top, and wire it to the LCD backpack and then to the SHT41 sensor. Then, wire the Pi's GPIO pin 28 to the input of the Iot relay and wire a ground pin from the Pi to the ground slot of the Iot relay. Then, power on the Pi from the "always on" port of the relay and connect the germination mat to the "normally off" port of the relay. The code for the Pi is listed at the bottom of this page.
+
+## Images
+
+Here's what it looks like assembled!
+
+Closed:
+
+![proofer closed](/static/images/proofer-closed.jpg)
+
+Open:
+
+![proofer open](/static/images/proofer-open.jpg)
+
+Top:
+
+![proofer top](/static/images/proofer-top.jpg)
+
+Sensor:
+
+![proofer sensor](/static/images/proofer-sensor.jpg)
+
+## Figures
+
+So, I ran the code below, having the Pi power on the heater when the temp dropped below 80F and turn off when it hit above 82F. The first plot shows that it looked like from an initial temperature of under 70F, reaching above 82F. Notice there's a drop in temperature and humidity when I opened it around 11:30am.
+
+![proofer fig1](/static/images/proofer-0.png)
+
+The second plot I'll show below shows what happens when I add a bowl of water to the inside of the box.
+
+![proofer fig2](/static/images/proofer-1.png)
+
+All this looks great for making bread! The temperature increases, the code works, and the humidity remains high. Next step is to make some bread!
+
+## Raspberry Pi Code
+
+```python
+#!/usr/bin/python3
+
+# Imports
+from datetime import datetime
+import pickle
+import time
+import collections
+
+import board
+import busio
+import adafruit_sht4x
+import RPi.GPIO as GPIO
+import adafruit_character_lcd.character_lcd_i2c as character_lcd
+
+# Helper functions
+def c_to_f(celc):
+    return (celc*9./5.)+32
+
+def print_and_store(string, buffer):
+    buffer.append(string+"\n")
+    print(string)
+    None
+
+# Setup loops
+while True:
+    # Setup LCD
+    try:
+        i2c_lcd = busio.I2C(board.SCL, board.SDA)
+        cols = 16
+        rows = 2
+        lcd = character_lcd.Character_LCD_I2C(i2c_lcd, cols, rows)
+        break
+    except:
+        pass
+    time.sleep(1)
+
+while True:
+    # Setup pi
+    try:
+        gpio_out = 26
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(gpio_out, GPIO.OUT)
+        break
+    except:
+        lcd.clear()
+        lcd.message = "Error:\nPi setup"
+    time.sleep(1)
+
+while True:
+    # Setup pi
+    try:
+        # Setup sensor
+        i2c_tmp = board.I2C()  # uses board.SCL and board.SDA
+        sht = adafruit_sht4x.SHT4x(i2c_tmp)
+        print("Found SHT4x with serial number", hex(sht.serial_number))
+
+        sht.mode = adafruit_sht4x.Mode.NOHEAT_HIGHPRECISION
+        print("Current mode is: ", adafruit_sht4x.Mode.string[sht.mode])
+        break
+    except:
+        lcd.clear()
+        lcd.message = "Error:\nSensor setup" 
+    time.sleep(1)
+
+
+# Save variables
+temperatures = list()
+humidities = list()
+times = list()
+heating = list()
+
+print("\nStarting main loop\n")
+# Main logic
+delay = 5 # seconds between each temperature measurement
+save_freq = 5*60 # seconds between each saving of variables
+save_counter = 0
+min_tmp = 80 # Minimum temperature to turn off heater
+max_tmp = 82 # Maximum temperature to turn on heater
+heat_on = False # So we switch heating only once, not every iteration
+max_lines = 100000 # Maximum lines in log file
+circ_buff = collections.deque(maxlen=max_lines) # Circular text buffer
+flag = False # Just to show the display is changing
+while True:
+    try:
+        # Get time
+        now = datetime.now()
+        current_time = now.strftime("%H:%M:%S")
+        # Get temperature
+        temperature, relative_humidity = sht.measurements
+        temperature = c_to_f(temperature)
+        # Save variable values
+        temperatures.append(temperature)
+        humidities.append(relative_humidity)
+        times.append(now)
+        heating.append(heat_on)
+        # Print and save to queue
+        print_and_store(f"{current_time}", circ_buff)
+        print_and_store(f"Heating? {heat_on}", circ_buff)
+        print_and_store(f"Temperature: {temperature:0.1f} F", circ_buff)
+        print_and_store(f"Humidity: {relative_humidity:0.1f}%", circ_buff)
+
+        # Heating logic
+        if not heat_on and temperature < min_tmp:
+            print_and_store(f"Turning on heat!", circ_buff)
+            GPIO.output(gpio_out, GPIO.HIGH)
+            heat_on = True
+        elif heat_on and temperature > max_tmp:
+            print_and_store(f"Turning off heat!", circ_buff)
+            GPIO.output(gpio_out, GPIO.LOW)
+            heat_on = False
+
+        # Update LCD
+        flag_str = "*" if flag else " "
+        flag = not flag
+        lcd.message = f"Heat {'on ' if heat_on else 'off'} {'      '+flag_str}\n{temperature:>5.1f}F  {relative_humidity:>5.1f}%"
+
+        # Update variables
+        save_counter += delay
+
+        if save_counter > save_freq:
+            print_and_store(f"Saving variables and writing to log", circ_buff)
+            with open('/home/alexey/proofer/data/vars.pkl', 'wb') as f:
+                d = dict()
+                d['temperatures'] = temperatures
+                d['humidities'] = humidities
+                d['times'] = times
+                d['heating'] = heating
+                pickle.dump(d, f)
+            # Update log file
+            with open('/home/alexey/proofer/data/log.txt', 'w') as f:
+                f.writelines(circ_buff)
+            save_counter = 0
+
+        print_and_store(f"", circ_buff)
+        
+    except:
+        try:
+            lcd.clear()
+            lcd.message = "Error:\nMain loop" 
+        except:
+            pass
+
+    time.sleep(delay)
+```
+
+
